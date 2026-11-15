@@ -264,6 +264,19 @@ end
 --- have done anyway pre-v1.7.0.
 local infinity_unsupported = {}
 
+--- Hosts that answered a Depth: infinity PROPFIND with a 2xx that listed no
+--- children beyond the base collection itself. Koofr's WebDAV frontend does
+--- this: it silently degrades `infinity` to `0` and returns a valid 207 with
+--- a single self-entry, which the self-skip below filters to an empty list.
+--- Trusting that answer would make the whole remote tree invisible — the
+--- planner would see an empty remote index and no server-side change could
+--- ever trigger a download. A genuinely empty library produces the same
+--- shape; there the recursive walk costs one extra Depth: 1 PROPFIND per
+--- host process and returns the same empty list, so treating "2xx, zero
+--- children" as untrustworthy is safe in both cases. Memoed per host like
+--- infinity_unsupported so subsequent syncs go straight to the recursion.
+local infinity_degenerate = {}
+
 --- Collect all file URLs under base_url. Returns flat list of
 --- { href, href_raw, is_collection, path, href_full } for all resources.
 --- `href_full` is the absolute decoded URL (compatible with existing
@@ -275,7 +288,10 @@ local infinity_unsupported = {}
 --- planning time on Resume / startup. Falls back to the legacy recursive
 --- Depth: 1 walk when the server refuses (some hosted providers return
 --- 403, 507 Insufficient Storage, or 501 Not Implemented; we don't try
---- to enumerate them — any 4xx/5xx triggers fallback and is memoed).
+--- to enumerate them — any 4xx/5xx triggers fallback and is memoed), and
+--- also when it answers 2xx but lists no children (Koofr silently
+--- degrades Depth: infinity to Depth: 0 and returns a valid 207 with
+--- only the base itself — see infinity_degenerate).
 --- The recursion itself uses the raw (percent-encoded) form as the request
 --- URL so strict servers don't 400 on paths containing spaces or other
 --- reserved chars.
@@ -283,7 +299,8 @@ local function list_all(base_url, username, password)
     base_url = normalize_url(base_url)
     local base_domain = base_url:match("^(https?://[^/]+)") or ""
 
-    if base_domain ~= "" and not infinity_unsupported[base_domain] then
+    if base_domain ~= "" and not infinity_unsupported[base_domain]
+            and not infinity_degenerate[base_domain] then
         local list, code, err = list_one(base_url, username, password, "infinity")
         if list then
             -- Same self-skip key derivation as the recursive path: the
@@ -302,8 +319,20 @@ local function list_all(base_url, username, password)
                     table.insert(all, e)
                 end
             end
-            logger.dbg("webdav_autosync: list_all depth=infinity entries=" .. tostring(#all))
-            return all
+            if #all > 0 then
+                logger.dbg("webdav_autosync: list_all depth=infinity entries=" .. tostring(#all))
+                return all
+            end
+            -- Degenerate answer: valid 2xx, but not one child of the base
+            -- (only its self-entry). Koofr silently degrades Depth: infinity
+            -- to Depth: 0 and replies 207, so the 4xx/5xx fallbacks below
+            -- never fire and the remote tree would read as empty forever —
+            -- no download can ever be planned from an empty remote index.
+            -- A genuinely empty library also lands here; the recursive walk
+            -- reproduces the empty list at the cost of one extra PROPFIND.
+            logger.info("webdav_autosync: list_all depth=infinity listed no children host="
+                .. base_domain .. " — falling back to recursive Depth: 1")
+            infinity_degenerate[base_domain] = true
         end
         if type(code) == "number" and code >= 400 and code < 500 then
             -- 4xx is a hard refusal — config-level, won't change in this
