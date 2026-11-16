@@ -267,7 +267,10 @@ function WebDAVSync:offerReloadIfUpdated(stats, local_folder)
         .. " rel=" .. tostring(rel)
         .. " downloaded=[" .. table.concat(stats.downloaded_rels or {}, ",") .. "]")
     if not rel then return false end
-    for _, r in ipairs(stats.downloaded_rels or {}) do
+    -- NOTE the `__`: gettext lives in the file-local `_`, so the loop
+    -- dummy must NOT be named `_` — the ConfirmBox strings below are built
+    -- inside the loop body and would call the numeric index instead.
+    for __, r in ipairs(stats.downloaded_rels or {}) do
         if r == rel then
             UIManager:show(ConfirmBox:new{
                 text = _("This book was updated on the server and the new version has been downloaded."),
