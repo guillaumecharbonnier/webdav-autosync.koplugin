@@ -50,8 +50,18 @@ local function init_stats_from_plan(plan_obj)
     }
 end
 
-local function run_action_loop(plan_obj, stats, on_action_failure)
+-- `open_document_path`, when given, marks download actions whose target IS
+-- the file the reader currently has open: `sync.do_action` passes `atomic`
+-- down to `webdav.download_file`, which then stages through <file>.part and
+-- renames into place. On POSIX the reader's live handle keeps the old inode
+-- readable while the download is in flight, and the rename publishes a
+-- complete file — no window where a lazily-reading PDFium handle could see
+-- a half-written book.
+local function run_action_loop(plan_obj, stats, on_action_failure, open_document_path)
     for _, a in ipairs(plan_obj.actions.to_download) do
+        if open_document_path and a.local_path == open_document_path then
+            a.atomic = true
+        end
         local ok, msg = sync.do_action(plan_obj, "download", a)
         if ok then
             stats.downloaded = stats.downloaded + 1
@@ -467,7 +477,7 @@ end
 -- path must continue the chain or a stray tap would leave the sync lock
 -- held and stall a chained sync. See review_deletions_each for the
 -- dismissal/close mechanics (handled flag, who closes the widget).
-local function resolve_conflicts_interactive(plan_obj, conflicts, stats, on_done)
+local function resolve_conflicts_interactive(plan_obj, conflicts, stats, on_done, open_document_path)
     local idx = 1
     local function next_one()
         if idx > #conflicts then on_done() return end
@@ -485,6 +495,9 @@ local function resolve_conflicts_interactive(plan_obj, conflicts, stats, on_done
                 stats.conflicts_skipped = stats.conflicts_skipped + 1
                 next_one()
                 return
+            end
+            if action == "download" and open_document_path and c.local_path == open_document_path then
+                c.atomic = true
             end
             local ok, msg = sync.do_action(plan_obj, action, c)
             if ok then
@@ -570,6 +583,14 @@ local function run_one_way(ctx)
         UIManager:show(InfoMessage:new{ text = text })
     end
     notify_library_refresh(ctx.local_folder, downloaded_rels)
+    -- Mirror of run_planned's opts.on_completed for the legacy path: the
+    -- caller gets the same { downloaded_rels = ... } shape.
+    if ctx.on_completed then
+        local ok_cb, cb_err = pcall(ctx.on_completed, { downloaded_rels = downloaded_rels })
+        if not ok_cb then
+            logger.warn("webdav_autosync: on_completed failed: " .. tostring(cb_err))
+        end
+    end
     turn_off_wifi_if_requested(ctx)
     triggers.release_sync_lock()
     if ctx.on_done then ctx.on_done() end
@@ -617,7 +638,7 @@ local function run_planned(plan_fn, ctx, opts)
     end
 
     local stats = init_stats_from_plan(plan_obj)
-    run_action_loop(plan_obj, stats, on_action_failure)
+    run_action_loop(plan_obj, stats, on_action_failure, opts.open_document_path)
 
     if syncing_msg then UIManager:close(syncing_msg) end
 
@@ -626,6 +647,15 @@ local function run_planned(plan_fn, ctx, opts)
         sync.save_cache(plan_obj)
         notify_library_refresh(plan_obj.local_folder, stats.downloaded_rels)
         if opts.log_done then opts.log_done(stats) end
+        -- Caller hook (e.g. "the book you are reading was just updated →
+        -- offer reload"). pcall-guarded: a bug in the callback must never
+        -- strand the sync lock.
+        if opts.on_completed then
+            local ok_cb, cb_err = pcall(opts.on_completed, stats)
+            if not ok_cb then
+                logger.warn("webdav_autosync: on_completed failed: " .. tostring(cb_err))
+            end
+        end
         if chain_stats then
             merge_chain_stats(chain_stats, stats, chain_section)
         elseif (not silent_mode) or stats.failed > 0 then
@@ -644,7 +674,7 @@ local function run_planned(plan_fn, ctx, opts)
         logger.info(string.format(
             "webdav_autosync: %s surfacing conflicts count=%d",
             plan_failure_label, #conflicts))
-        resolve_conflicts_interactive(plan_obj, conflicts, stats, finish)
+        resolve_conflicts_interactive(plan_obj, conflicts, stats, finish, opts.open_document_path)
     end
 
     -- Deletions run before conflicts (action loop → deletions → conflicts →
@@ -682,5 +712,6 @@ return {
     show_summary = show_summary,
     show_chain_summary = show_chain_summary,
     notify_library_refresh = notify_library_refresh,
+    open_document_rel = open_document_rel,
     turn_off_wifi_if_requested = turn_off_wifi_if_requested,
 }

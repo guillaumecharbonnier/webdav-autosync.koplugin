@@ -417,14 +417,21 @@ end
 --- where the old buffered approach would leave nothing — we delete it on
 --- non-2xx so the next sync re-downloads cleanly rather than treating
 --- the partial file as legitimate local content.
-local function download_file(remote_url, local_path, username, password)
+--- `atomic` (set by the runner when the target is the currently open
+--- document): stage the body at <local_path>.part and rename into place on
+--- success. On POSIX the reader's open handle keeps the OLD inode intact
+--- while the download runs (a lazily-reading PDFium handle never observes a
+--- truncated file), and the same-directory rename publishes a complete new
+--- file in one step.
+local function download_file(remote_url, local_path, username, password, atomic)
     local url = url_encode(normalize_url(remote_url))
     local dir = local_path:match("^(.+)/[^/]+$")
     if dir then
         local ok_mp, mp_err = util.makePath(dir)
         if not ok_mp then return nil, mp_err end
     end
-    local f, ferr = io.open(local_path, "wb")
+    local write_path = atomic and (local_path .. ".part") or local_path
+    local f, ferr = io.open(write_path, "wb")
     if not f then return nil, ferr end
     local code = do_request("GET", {
         url = url,
@@ -434,8 +441,15 @@ local function download_file(remote_url, local_path, username, password)
         password = (password and password ~= "") and password or nil,
     }, socketutil and { socketutil.FILE_BLOCK_TIMEOUT, socketutil.FILE_TOTAL_TIMEOUT } or nil)
     if type(code) ~= "number" or code ~= 200 then
-        os.remove(local_path)
+        os.remove(write_path)
         return nil, "HTTP " .. tostring(code)
+    end
+    if atomic then
+        -- Same-directory rename: atomic on every filesystem KOReader runs on.
+        if not os.rename(write_path, local_path) then
+            os.remove(write_path)
+            return nil, "rename failed"
+        end
     end
     return true
 end

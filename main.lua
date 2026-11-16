@@ -175,6 +175,18 @@ function WebDAVSync:addToMainMenu(menu_items)
             },
         },
     }
+    -- The plugin gets one instance per UI surface (file manager / reader);
+    -- only offer "Refresh this book" where there is a book to refresh.
+    if self.ui and self.ui.document then
+        table.insert(menu_items.webdav_sync.sub_item_table, 2, {
+            text = _("Refresh this book from server"),
+            help_text = _("Check the server for a newer copy of the book you are reading, and reload it in place if it changed."),
+            callback = function()
+                settings.mark_auto_run()
+                self:doSync({ focus_open_book = true })
+            end,
+        })
+    end
 end
 
 function WebDAVSync:onWebDAVSyncNow()
@@ -245,6 +257,37 @@ function WebDAVSync:onSuspend()
     triggers.on_suspend()
 end
 
+--- If the book currently open in this reader was among the files this sync
+--- just downloaded, offer to swap in the new copy. ReaderUI:showReader is
+--- KOReader's documented single entry point ("will sanely close the
+--- existing ReaderUI instance for you"): the close flushes settings and
+--- serializes the current page into the .sdr sidecar — and fires the
+--- CloseDocument event our progress-sync trigger uses — then reopens the
+--- file, so the reload comes back at the same position. Only applies when
+--- the open file lives inside the synced folder.
+function WebDAVSync:offerReloadIfUpdated(stats, local_folder)
+    local doc = self.ui and self.ui.document
+    if not doc then return false end
+    local rel = runner.open_document_rel(local_folder, doc.file)
+    if not rel then return false end
+    for _, r in ipairs(stats.downloaded_rels or {}) do
+        if r == rel then
+            UIManager:show(ConfirmBox:new{
+                text = _("This book was updated on the server and the new version has been downloaded."),
+                ok_text = _("Reload now"),
+                ok_callback = function()
+                    UIManager:nextTick(function()
+                        require("apps/reader/readerui"):showReader(doc.file)
+                    end)
+                end,
+                cancel_text = _("Later"),
+            })
+            return true
+        end
+    end
+    return false
+end
+
 function WebDAVSync:doSync(opts)
     opts = opts or {}
     local is_auto = opts.is_auto
@@ -306,6 +349,19 @@ function WebDAVSync:doSync(opts)
 
     local open_document_path = (self.ui and self.ui.document and self.ui.document.file) or nil
     local two_way = G_reader_settings and G_reader_settings:isTrue("webdav_autosync_books_two_way")
+    -- Completion hook shared by both modes: reload prompt when the open
+    -- book was just replaced; in "focus" mode (Refresh this book) also
+    -- give explicit up-to-date feedback so the tap never looks ignored.
+    local focus_open_book = opts.focus_open_book == true
+    local function sync_completed(stats)
+        if self:offerReloadIfUpdated(stats, local_folder) then return end
+        if not focus_open_book then return end
+        if two_way then
+            UIManager:show(InfoMessage:new{ text = _("This book is already up to date.") })
+        else
+            UIManager:show(InfoMessage:new{ text = _("Two-way book sync is off, so updates to files that already exist on this device cannot be detected. Turn it on in the WebDAV Sync menu.") })
+        end
+    end
     local ctx = {
         server_url = server_url,
         username = username,
@@ -317,6 +373,7 @@ function WebDAVSync:doSync(opts)
         silent_mode = silent_mode,
         chain_stats = chain_stats,
         on_done = on_done,
+        on_completed = sync_completed,
     }
     if two_way then
         logger.info("webdav_autosync: book sync start mode=two_way is_auto=" .. tostring(is_auto == true))
@@ -333,6 +390,7 @@ function WebDAVSync:doSync(opts)
                 plan_failure_label = _("book sync"),
                 plan_failure_prefix = _("Sync failed: %1"),
                 open_document_path = open_document_path,
+                on_completed = sync_completed,
                 on_done = on_done,
                 log_done = function(stats)
                     logger.info(string.format(

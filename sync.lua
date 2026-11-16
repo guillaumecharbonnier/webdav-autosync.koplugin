@@ -855,7 +855,8 @@ local function do_action(p, kind, action)
         return true
     elseif kind == "download" then
         logger.dbg("webdav_autosync: action=download rel=" .. action.rel)
-        local ok, msg = webdav.download_file(action.remote_url, action.local_path, p.username, p.password)
+        local ok, msg = webdav.download_file(action.remote_url, action.local_path,
+                p.username, p.password, action.atomic)
         if not ok then
             logger.dbg("webdav_autosync: action=download rel=" .. action.rel .. " result=fail msg=" .. tostring(msg))
             return nil, msg
