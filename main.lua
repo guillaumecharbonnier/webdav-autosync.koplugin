@@ -346,15 +346,19 @@ function WebDAVSync:doSync(opts)
             if on_done then on_done() end
             return
         end
-        UIManager:show(ConfirmBox:new{
-            text = _("WiFi is not enabled. Turn on WiFi now?"),
-            ok_text = _("Turn on WiFi"),
-            ok_callback = function()
-                NetworkMgr:turnOnWifi(function()
-                    self:doSync({ is_auto = is_auto, turn_off_wifi = true })
-                end)
-            end,
+        -- Auto-accept: tapping "Sync books now" / "Refresh this book" /
+        -- a bound gesture IS the WiFi consent; the confirm box was pure
+        -- tap-tax on an intentional action. Auto triggers never reach
+        -- here (they skip offline above), so the radio still never
+        -- wakes in a pocket. turn_off_wifi=true puts the radio back
+        -- down when the sync ends, exactly as before.
+        UIManager:show(InfoMessage:new{
+            text = _("Turning on WiFi…"),
+            timeout = 2,
         })
+        NetworkMgr:turnOnWifi(function()
+            self:doSync({ is_auto = is_auto, turn_off_wifi = true })
+        end)
         return
     end
 
@@ -544,16 +548,18 @@ function WebDAVSync:doProgressSync(opts)
     end
 
     if NetworkMgr.isWifiOn and not NetworkMgr:isWifiOn() then
-        UIManager:show(ConfirmBox:new{
-            text = _("WiFi is not enabled. Turn on WiFi now?"),
-            ok_text = _("Turn on WiFi"),
-            ok_callback = function()
-                NetworkMgr:turnOnWifi(function()
-                    self:doProgressSync({ manual = true, on_done = on_done })
-                end)
-            end,
-            cancel_callback = done,
+        -- Auto-accept, same contract as the book sync pre-flight above:
+        -- the manual tap is the consent, WiFi comes back down after via
+        -- the sync's own teardown. (The old box's cancel_callback only
+        -- existed to release the in-flight lock on "no" — no box, no
+        -- "no", lock lifecycle unchanged.)
+        UIManager:show(InfoMessage:new{
+            text = _("Turning on WiFi…"),
+            timeout = 2,
         })
+        NetworkMgr:turnOnWifi(function()
+            self:doProgressSync({ manual = true, on_done = on_done })
+        end)
         return
     end
 
