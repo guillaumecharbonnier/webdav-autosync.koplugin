@@ -75,7 +75,45 @@ local function spin_setting_row(text_func, callback_fn, help_text)
     }
 end
 
+-- Put our entry near the TOP of the Tools list instead of at its end.
+-- MenuSorter builds the Tools submenu by walking the `tools` list of the
+-- core order modules, so registering our id there fixes our position;
+-- the `sorting_hint` on the menu item below is only consulted for orphans,
+-- so it stays as graceful degradation (land at the END of Tools) if a
+-- future KOReader ever reworks the order mechanism. This is the same
+-- technique Storefront itself uses to sit right below "Read timer" — a
+-- pure in-memory edit of the cached core order module, never a file on
+-- disk; re-run on every menu rebuild, guarded against double insertion.
+-- We anchor right after "Storefront" (either plugin load order converges:
+-- if Storefront registers first we land after it; if we go first, its own
+-- insert at slot 2 pushes us to slot 3). Without Storefront we take slot 2
+-- (below "Read timer"). Degraded case: a user settings/*_menu_order.lua
+-- overriding `tools` replaces the core list wholesale and our id won't be
+-- in it — the sorting_hint then keeps us in Tools (at its end) rather than
+-- orphaned at top level.
+local function inject_into_tools_order()
+    for _, order_path in ipairs({ "ui/elements/reader_menu_order",
+                                  "ui/elements/filemanager_menu_order" }) do
+        local ok, order = pcall(require, order_path)
+        if ok and type(order) == "table" and type(order.tools) == "table" then
+            local list = order.tools
+            local already = false
+            for i = 1, #list do
+                if list[i] == "webdav_sync" then already = true break end
+            end
+            if not already then
+                local pos = 2
+                for i = 1, #list do
+                    if list[i] == "Storefront" then pos = i + 1 break end
+                end
+                table.insert(list, pos, "webdav_sync")
+            end
+        end
+    end
+end
+
 function WebDAVSync:addToMainMenu(menu_items)
+    inject_into_tools_order()
     menu_items.webdav_sync = {
         text = _("WebDAV Sync"),
         sorting_hint = "tools",
