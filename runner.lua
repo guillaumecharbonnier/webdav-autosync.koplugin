@@ -285,16 +285,41 @@ local function record_deletion_result(stats, entry, choice)
     end
 end
 
+-- Absolute, symlink-resolved view of a path via ffi/util.realpath (C
+-- realpath). Resolves relative paths against the process CWD — the same
+-- cwd the sync planner's io/lfs calls resolve `download_folder` against —
+-- and collapses symlinks/`..` (e.g. Kobo's historical /mnt/onboard alias
+-- vs the real mount a newer KOReader reports as the document path).
+-- Falls back to the input when realpath fails (file already gone, exotic
+-- platform) rather than erroring.
+local function abspath(p)
+    if type(p) ~= "string" or p == "" then return nil end
+    local ok_fi, ffiutil = pcall(require, "ffi/util")
+    if ok_fi and ffiutil and ffiutil.realpath then
+        return ffiutil.realpath(p) or p
+    end
+    return p
+end
+
 -- Translate the plugin's open-document absolute path into a rel under the
 -- download folder, or nil when there is no open document / it lives outside
 -- the folder. Used to protect the open book (and its `<book>.sdr/`) from
--- deletion propagation.
+-- deletion propagation, and to match downloads against the open book for
+-- the reload prompt.
+-- Both sides are canonicalized first: `download_folder` comes from a
+-- PathChooser pick and may be relative to the KOReader data dir or contain
+-- symlinked mount segments, while `document.file` is the absolute path the
+-- document was opened through. Raw string prefixes disagree on exactly the
+-- layouts where sync still works (the filesystem resolves the relative
+-- form) — which made the open book look "outside the library" on disk and
+-- silently disabled both the reload prompt and deletion protection.
 local function open_document_rel(local_folder, open_document_path)
-    if type(open_document_path) ~= "string" or open_document_path == "" then return nil end
-    if type(local_folder) ~= "string" or local_folder == "" then return nil end
-    local root = local_folder:gsub("/+$", "")
-    if open_document_path:sub(1, #root + 1) ~= root .. "/" then return nil end
-    local rel = open_document_path:sub(#root + 2)
+    local root = abspath(local_folder)
+    local doc = abspath(open_document_path)
+    if not root or not doc then return nil end
+    root = root:gsub("/+$", "")
+    if root == "" or doc:sub(1, #root + 1) ~= root .. "/" then return nil end
+    local rel = doc:sub(#root + 2)
     if rel == "" then return nil end
     return rel
 end
@@ -713,5 +738,6 @@ return {
     show_chain_summary = show_chain_summary,
     notify_library_refresh = notify_library_refresh,
     open_document_rel = open_document_rel,
+    abspath = abspath,
     turn_off_wifi_if_requested = turn_off_wifi_if_requested,
 }

@@ -225,18 +225,12 @@ function WebDAVSync:onCloseDocument()
         logger.dbg("webdav_autosync: trigger=close skip reason=no-download-folder")
         return
     end
-    local trimmed = local_folder:gsub("/+$", "")
-
-    -- Book opened from outside the synced library — no remote mapping; no-op.
-    -- Don't fall back to a full-library walk on close, that defeats the
-    -- whole reason this trigger is scoped.
-    if doc.file:sub(1, #trimmed + 1) ~= trimmed .. "/" then
+    local book_rel = runner.open_document_rel(local_folder, doc.file)
+    if not book_rel then
+        -- Book opened from outside the synced library — no remote mapping; no-op.
+        -- Don't fall back to a full-library walk on close, that defeats the
+        -- whole reason this trigger is scoped.
         logger.dbg("webdav_autosync: trigger=close skip reason=outside-library file=" .. tostring(doc.file))
-        return
-    end
-    local book_rel = doc.file:sub(#trimmed + 2)
-    if book_rel == "" then
-        logger.dbg("webdav_autosync: trigger=close skip reason=empty-relpath")
         return
     end
 
@@ -269,6 +263,9 @@ function WebDAVSync:offerReloadIfUpdated(stats, local_folder)
     local doc = self.ui and self.ui.document
     if not doc then return false end
     local rel = runner.open_document_rel(local_folder, doc.file)
+    logger.dbg("webdav_autosync: reload check doc=" .. tostring(doc.file)
+        .. " rel=" .. tostring(rel)
+        .. " downloaded=[" .. table.concat(stats.downloaded_rels or {}, ",") .. "]")
     if not rel then return false end
     for _, r in ipairs(stats.downloaded_rels or {}) do
         if r == rel then
@@ -356,10 +353,12 @@ function WebDAVSync:doSync(opts)
     local function sync_completed(stats)
         if self:offerReloadIfUpdated(stats, local_folder) then return end
         if not focus_open_book then return end
-        if two_way then
-            UIManager:show(InfoMessage:new{ text = _("This book is already up to date.") })
-        else
+        if not two_way then
             UIManager:show(InfoMessage:new{ text = _("Two-way book sync is off, so updates to files that already exist on this device cannot be detected. Turn it on in the WebDAV Sync menu.") })
+        elseif self.ui.document and not runner.open_document_rel(local_folder, self.ui.document.file) then
+            UIManager:show(InfoMessage:new{ text = _("This book is not inside the synced download folder, so there is nothing on the server to refresh it from.") })
+        else
+            UIManager:show(InfoMessage:new{ text = _("This book is already up to date.") })
         end
     end
     local ctx = {
