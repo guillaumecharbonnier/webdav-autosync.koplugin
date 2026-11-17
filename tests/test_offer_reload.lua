@@ -125,4 +125,28 @@ ok_call, ok_ret = pcall(WebDAVSync.offerReloadIfUpdated,
     { ui = {} }, { downloaded_rels = { "fusion-panel/sync-test.pdf" } }, FOLDER)
 check("no document: false", ok_call and ok_ret == false)
 
+-- 6: auto_reload ("Refresh this book from server" tap): match -> the
+--    reload fires immediately with NO ConfirmBox — the button already
+--    promised "reload it in place if it changed"; asking again is
+-- tap-tax on an implied yes.
+shown, ticked, opened = {}, {}, {}
+ok_call, ok_ret = pcall(WebDAVSync.offerReloadIfUpdated,
+    fresh_self(), { downloaded_rels = { "fusion-panel/sync-test.pdf" } },
+    FOLDER, true)
+check("auto: no error", ok_call, tostring(ok_ret))
+check("auto: returns true", ok_ret == true, tostring(ok_ret))
+check("auto: no dialog shown", #shown == 0, tostring(#shown))
+check("auto: nextTick queued reload", #ticked == 1, tostring(#ticked))
+if #ticked == 1 then pcall(ticked[1]) end
+check("auto: showReader got the open file", opened[1] == DOC, tostring(opened[1]))
+
+-- 7: auto_reload but the open book was NOT updated -> silent false; the
+--    focus mode then shows its own "already up to date" feedback.
+shown, ticked, opened = {}, {}, {}
+ok_call, ok_ret = pcall(WebDAVSync.offerReloadIfUpdated,
+    fresh_self(), { downloaded_rels = { "fusion-panel/other.pdf" } },
+    FOLDER, true)
+check("auto no match: false, nothing fired",
+    ok_call and ok_ret == false and #shown == 0 and #ticked == 0 and #opened == 0)
+
 os.exit(failures == 0 and 0 or 1)

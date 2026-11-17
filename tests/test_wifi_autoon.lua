@@ -143,4 +143,20 @@ reset(false)
 WebDAVSync.doProgressSync(self, {})
 check("progress auto+offline: silent", wifi.on_calls == 0 and #planned == 0 and #shown == 0)
 
+-- 6: "Refresh this book" (focus_open_book) must survive the WiFi
+--    round-trip: after the auto radio-on, the sync still completes in
+--    focus mode — feedback on the completion hook proves the flag was
+--    carried through the continuation (it once wasn't, and the refresh
+--    silently degraded to a plain full sync).
+reset(false)
+WebDAVSync.doSync(self, { focus_open_book = true })
+check("refresh+wifi-off: sync ran", #planned == 1, tostring(#planned))
+local oc = planned[1] and planned[1].opts and planned[1].opts.on_completed
+if oc then pcall(oc, { downloaded_rels = {} }) end
+local last = shown[#shown]
+check("refresh+wifi-off: focus feedback survived",
+    oc ~= nil and last and last.class == "InfoMessage"
+    and (last.text or ""):find("up to date") ~= nil,
+    last and (last.class .. ":" .. tostring(last.text)) or "none")
+
 os.exit(failures == 0 and 0 or 1)

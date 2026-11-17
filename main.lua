@@ -297,7 +297,7 @@ end
 --- CloseDocument event our progress-sync trigger uses — then reopens the
 --- file, so the reload comes back at the same position. Only applies when
 --- the open file lives inside the synced folder.
-function WebDAVSync:offerReloadIfUpdated(stats, local_folder)
+function WebDAVSync:offerReloadIfUpdated(stats, local_folder, auto_reload)
     local doc = self.ui and self.ui.document
     if not doc then return false end
     local rel = runner.open_document_rel(local_folder, doc.file)
@@ -305,19 +305,30 @@ function WebDAVSync:offerReloadIfUpdated(stats, local_folder)
         .. " rel=" .. tostring(rel)
         .. " downloaded=[" .. table.concat(stats.downloaded_rels or {}, ",") .. "]")
     if not rel then return false end
+    local function reload()
+        UIManager:nextTick(function()
+            require("apps/reader/readerui"):showReader(doc.file)
+        end)
+    end
     -- NOTE the `__`: gettext lives in the file-local `_`, so the loop
     -- dummy must NOT be named `_` — the ConfirmBox strings below are built
     -- inside the loop body and would call the numeric index instead.
     for __, r in ipairs(stats.downloaded_rels or {}) do
         if r == rel then
+            if auto_reload then
+                -- "Refresh this book from server" already promised to
+                -- "reload it in place if it changed" — asking again is
+                -- tap-tax on an implied yes. Background syncs (wake,
+                -- startup) still ask: mid-reading page flips must stay
+                -- opt-in.
+                logger.dbg("webdav_autosync: auto-reload open book rel=" .. tostring(rel))
+                reload()
+                return true
+            end
             UIManager:show(ConfirmBox:new{
                 text = _("This book was updated on the server and the new version has been downloaded."),
                 ok_text = _("Reload now"),
-                ok_callback = function()
-                    UIManager:nextTick(function()
-                        require("apps/reader/readerui"):showReader(doc.file)
-                    end)
-                end,
+                ok_callback = reload,
                 cancel_text = _("Later"),
             })
             return true
@@ -357,7 +368,18 @@ function WebDAVSync:doSync(opts)
             timeout = 2,
         })
         NetworkMgr:turnOnWifi(function()
-            self:doSync({ is_auto = is_auto, turn_off_wifi = true })
+            -- Carry EVERYTHING through the radio round-trip: dropping
+            -- focus_open_book here once silently turned "Refresh this
+            -- book" into a plain full sync (no auto-reload, no
+            -- up-to-date feedback).
+            self:doSync({
+                is_auto = is_auto,
+                turn_off_wifi = true,
+                silent_mode = silent_mode,
+                chain_stats = chain_stats,
+                on_done = on_done,
+                focus_open_book = opts.focus_open_book,
+            })
         end)
         return
     end
@@ -396,7 +418,7 @@ function WebDAVSync:doSync(opts)
     -- give explicit up-to-date feedback so the tap never looks ignored.
     local focus_open_book = opts.focus_open_book == true
     local function sync_completed(stats)
-        if self:offerReloadIfUpdated(stats, local_folder) then return end
+        if self:offerReloadIfUpdated(stats, local_folder, focus_open_book) then return end
         if not focus_open_book then return end
         if not two_way then
             UIManager:show(InfoMessage:new{ text = _("Two-way book sync is off, so updates to files that already exist on this device cannot be detected. Turn it on in the WebDAV Sync menu.") })
